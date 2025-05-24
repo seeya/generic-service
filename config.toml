@@ -1,4 +1,7 @@
-# Example configuration demonstrating all features
+# Server configuration
+[server]
+host = "localhost"
+port = "8080"
 
 # Stage 1: Set a variable for API base URL
 [[stages]]
@@ -8,12 +11,13 @@ action = "set_variable"
 name = "api_base"
 value = "https://libgen.is/search.php?lg_topic=libgen&open=0&view=simple&res=25&phrase=1&column=def"
 
+
 # Stage 2: GET request to fetch user data
 [[stages]]
 name = "fetch_search"
 action = "get"
 [stages.parameters]
-url = "{{.variables.api_base}}&req=geopolitical+alpha"
+url = "{{.variables.api_base}}&req={{.variables.query_term}}"
 [stages.parameters.headers]
 "User-Agent" = "ActionService/1.0"
 "Accept" = "application/json"
@@ -47,10 +51,28 @@ input = "stages.fetch_book_page"
 selector = "a"
 operation = "first"
 
-# Stage 6: Download the file
+# Stage 6: Find book name
+[[stages]]
+name = "find_book_name"
+action = "scrape"
+[stages.parameters]
+input = "stages.fetch_book_page"
+selector = "h1"
+operation = "first"
+
+# Stage 7: Download the file
 [[stages]]
 name = "download_book"
 action = "download"
 [stages.parameters]
 url = "{{ .stages.find_download_link.attributes.href }}"
-output = "./downloads/book.pdf"
+output = "./downloads/{{ .stages.find_book_name.text }}.pdf"
+
+# Setup endpoint
+[[stages]]
+name = "search_book_api"
+action = "api"
+[stages.parameters]
+path = "/search"
+method = "GET"
+description = "Fetch user data by ID"

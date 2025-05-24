@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,9 +19,15 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// Config represents the main configuration structure
 type Config struct {
-	Stages []Stage `toml:"stages"`
+	Stages []Stage      `toml:"stages"`
+	Server ServerConfig `toml:"server"`
+}
+
+// ServerConfig holds server configuration
+type ServerConfig struct {
+	Port string `toml:"port"`
+	Host string `toml:"host"`
 }
 
 // Stage represents a single action stage
@@ -36,11 +43,21 @@ type Context struct {
 	Outputs   map[string]interface{} `json:"outputs"`
 }
 
+// APIEndpoint represents an API endpoint configuration
+type APIEndpoint struct {
+	Path        string
+	Method      string
+	Pipeline    []Stage
+	Description string
+}
+
 // Service handles the execution of stages
 type Service struct {
-	config  Config
-	context *Context
-	client  *http.Client
+	config    Config
+	context   *Context
+	client    *http.Client
+	endpoints map[string]*APIEndpoint
+	mux       *http.ServeMux
 }
 
 // HTTPResponse represents the response from HTTP actions
@@ -51,6 +68,20 @@ type HTTPResponse struct {
 	RawBody    string              `json:"raw_body"`
 }
 
+// APIRequest represents the structure of incoming API requests
+type APIRequest struct {
+	Variables map[string]interface{} `json:"variables"`
+	Data      map[string]interface{} `json:"data"`
+}
+
+// APIResponse represents the structure of API responses
+type APIResponse struct {
+	Success bool                   `json:"success"`
+	Data    interface{}            `json:"data,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+	Context map[string]interface{} `json:"context,omitempty"`
+}
+
 // NewService creates a new service instance
 func NewService(configPath string) (*Service, error) {
 	var config Config
@@ -58,14 +89,261 @@ func NewService(configPath string) (*Service, error) {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 
-	return &Service{
+	// Set default server config
+	if config.Server.Port == "" {
+		config.Server.Port = "8080"
+	}
+	if config.Server.Host == "" {
+		config.Server.Host = "localhost"
+	}
+
+	service := &Service{
 		config: config,
 		context: &Context{
 			Variables: make(map[string]interface{}),
 			Outputs:   make(map[string]interface{}),
 		},
-		client: &http.Client{Timeout: 600 * time.Second},
-	}, nil
+		client:    &http.Client{Timeout: 600 * time.Second},
+		endpoints: make(map[string]*APIEndpoint),
+		mux:       http.NewServeMux(),
+	}
+
+	// Register built-in endpoints
+	service.registerBuiltinEndpoints()
+
+	return service, nil
+}
+
+// registerBuiltinEndpoints registers system endpoints
+func (s *Service) registerBuiltinEndpoints() {
+	// Health check endpoint
+	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		s.sendJSONResponse(w, APIResponse{
+			Success: true,
+			Data:    map[string]string{"status": "healthy"},
+		})
+	})
+
+	// List endpoints
+	s.mux.HandleFunc("GET /endpoints", func(w http.ResponseWriter, r *http.Request) {
+		endpoints := make([]map[string]string, 0, len(s.endpoints))
+		for _, endpoint := range s.endpoints {
+			endpoints = append(endpoints, map[string]string{
+				"path":        endpoint.Path,
+				"method":      endpoint.Method,
+				"description": endpoint.Description,
+			})
+		}
+		s.sendJSONResponse(w, APIResponse{
+			Success: true,
+			Data:    endpoints,
+		})
+	})
+}
+
+// StartServer starts the HTTP server and processes API stages
+func (s *Service) StartServer() error {
+	// First, process all stages to set up API endpoints
+	if err := s.setupAPIEndpoints(); err != nil {
+		return fmt.Errorf("failed to setup API endpoints: %w", err)
+	}
+
+	addr := fmt.Sprintf("%s:%s", s.config.Server.Host, s.config.Server.Port)
+	log.Printf("Starting server on %s", addr)
+	log.Printf("Registered %d API endpoints", len(s.endpoints))
+
+	return http.ListenAndServe(addr, s.mux)
+}
+
+// setupAPIEndpoints processes stages and creates API endpoints
+func (s *Service) setupAPIEndpoints() error {
+	var apiStages []Stage
+	var currentPipeline []Stage
+
+	for _, stage := range s.config.Stages {
+		if strings.ToLower(stage.Action) == "api" {
+			// If we have accumulated stages, create an endpoint
+			if len(currentPipeline) > 0 {
+				if err := s.createAPIEndpoint(stage, currentPipeline); err != nil {
+					return fmt.Errorf("failed to create API endpoint for stage '%s': %w", stage.Name, err)
+				}
+				currentPipeline = nil
+			}
+			apiStages = append(apiStages, stage)
+		} else {
+			// Accumulate non-API stages
+			currentPipeline = append(currentPipeline, stage)
+		}
+	}
+
+	// If there are remaining stages without an API definition, create a default endpoint
+	if len(currentPipeline) > 0 {
+		defaultAPIStage := Stage{
+			Name:   "default_api",
+			Action: "api",
+			Parameters: map[string]interface{}{
+				"path":   "/execute",
+				"method": "POST",
+			},
+		}
+		if err := s.createAPIEndpoint(defaultAPIStage, currentPipeline); err != nil {
+			return fmt.Errorf("failed to create default API endpoint: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// createAPIEndpoint creates an HTTP endpoint for a pipeline
+func (s *Service) createAPIEndpoint(apiStage Stage, pipeline []Stage) error {
+	path := getStringParam(apiStage.Parameters, "path")
+	if path == "" {
+		return fmt.Errorf("API stage requires 'path' parameter")
+	}
+
+	method := strings.ToUpper(getStringParam(apiStage.Parameters, "method"))
+	if method == "" {
+		method = "POST"
+	}
+
+	description := getStringParam(apiStage.Parameters, "description")
+	if description == "" {
+		description = fmt.Sprintf("Auto-generated endpoint for %s", apiStage.Name)
+	}
+
+	endpoint := &APIEndpoint{
+		Path:        path,
+		Method:      method,
+		Pipeline:    pipeline,
+		Description: description,
+	}
+
+	// Register the endpoint
+	pattern := fmt.Sprintf("%s %s", method, path)
+	s.mux.HandleFunc(pattern, s.createEndpointHandler(endpoint))
+
+	s.endpoints[apiStage.Name] = endpoint
+	log.Printf("Registered endpoint: %s %s", method, path)
+
+	return nil
+}
+
+// createEndpointHandler creates an HTTP handler for an endpoint
+func (s *Service) createEndpointHandler(endpoint *APIEndpoint) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Create a new context for this request
+		requestContext := &Context{
+			Variables: make(map[string]interface{}),
+			Outputs:   make(map[string]interface{}),
+		}
+
+		// Parse request body
+		if r.Body != nil {
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				s.sendErrorResponse(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+				return
+			}
+
+			if len(bodyBytes) > 0 {
+				var apiRequest APIRequest
+				if err := json.Unmarshal(bodyBytes, &apiRequest); err != nil {
+					s.sendErrorResponse(w, fmt.Sprintf("Invalid JSON in request body: %v", err), http.StatusBadRequest)
+					return
+				}
+
+				// Set variables from request
+				if apiRequest.Variables != nil {
+					for k, v := range apiRequest.Variables {
+						requestContext.Variables[k] = v
+					}
+				}
+
+				// Set data as a special variable
+				if apiRequest.Data != nil {
+					requestContext.Variables["request_data"] = apiRequest.Data
+				}
+			}
+		}
+
+		// Add query parameters as variables
+		for key, values := range r.URL.Query() {
+			if len(values) == 1 {
+				requestContext.Variables["query_"+key] = values[0]
+			} else {
+				requestContext.Variables["query_"+key] = values
+			}
+		}
+
+		// Add path parameters (if any) - for future enhancement
+		requestContext.Variables["request_path"] = r.URL.Path
+		requestContext.Variables["request_method"] = r.Method
+
+		// Execute the pipeline
+		log.Printf("Pipelines: %v", endpoint.Pipeline)
+		result, err := s.executePipeline(endpoint.Pipeline, requestContext)
+		if err != nil {
+			s.sendErrorResponse(w, fmt.Sprintf("Pipeline execution failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Send successful response
+		s.sendJSONResponse(w, APIResponse{
+			Success: true,
+			Data:    result,
+			Context: requestContext.Variables,
+		})
+	}
+}
+
+// executePipeline executes a series of stages with a given context
+func (s *Service) executePipeline(pipeline []Stage, ctx *Context) (interface{}, error) {
+	// Create a temporary service instance with the request context
+	tempService := &Service{
+		config:  s.config,
+		context: ctx,
+		client:  s.client,
+	}
+
+	var lastResult interface{}
+
+	for i, stage := range pipeline {
+		log.Printf("Executing pipeline stage %d: %s (%s)", i+1, stage.Name, stage.Action)
+
+		result, err := tempService.executeStage(stage)
+		if err != nil {
+			return nil, fmt.Errorf("stage '%s' failed: %w", stage.Name, err)
+		}
+
+		// Store the result in context
+		ctx.Outputs[stage.Name] = result
+		lastResult = result
+
+		log.Printf("Pipeline stage %s completed successfully", stage.Name)
+	}
+
+	return lastResult, nil
+}
+
+// sendJSONResponse sends a JSON response
+func (s *Service) sendJSONResponse(w http.ResponseWriter, response APIResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
+}
+
+// sendErrorResponse sends an error response
+func (s *Service) sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	response := APIResponse{
+		Success: false,
+		Error:   message,
+	}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
 }
 
 // ScrapeElement represents a scraped HTML element
@@ -426,7 +704,7 @@ func (s *Service) elementToMap(selection *goquery.Selection) map[string]interfac
 	return element
 }
 
-// Execute runs all stages in sequence
+// Execute runs all stages in sequence (legacy mode)
 func (s *Service) Execute() error {
 	for i, stage := range s.config.Stages {
 		fmt.Printf("Executing stage %d: %s (%s)\n", i+1, stage.Name, stage.Action)
@@ -459,6 +737,13 @@ func (s *Service) executeStage(stage Stage) (interface{}, error) {
 		return s.executeSetVariable(stage)
 	case "scrape":
 		return s.executeScrape(stage)
+	case "api":
+		// API stages are handled during server setup, not execution
+		return map[string]interface{}{
+			"type":   "api_endpoint",
+			"path":   getStringParam(stage.Parameters, "path"),
+			"method": getStringParam(stage.Parameters, "method"),
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown action: %s", stage.Action)
 	}
@@ -819,11 +1104,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := service.Execute(); err != nil {
-		fmt.Printf("Execution failed: %v\n", err)
+	if err := service.StartServer(); err != nil {
+		fmt.Printf("Server failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("All stages completed successfully!")
-	service.PrintContext()
 }

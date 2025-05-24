@@ -1,0 +1,5 @@
+services:
+  generic_service:
+    container_name: generic_service
+    image: bizkits/generic-service:latest
+    restart: unless-stopped
