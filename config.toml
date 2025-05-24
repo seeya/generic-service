@@ -1,0 +1,56 @@
+# Example configuration demonstrating all features
+
+# Stage 1: Set a variable for API base URL
+[[stages]]
+name = "setup"
+action = "set_variable"
+[stages.parameters]
+name = "api_base"
+value = "https://libgen.is/search.php?lg_topic=libgen&open=0&view=simple&res=25&phrase=1&column=def"
+
+# Stage 2: GET request to fetch user data
+[[stages]]
+name = "fetch_search"
+action = "get"
+[stages.parameters]
+url = "{{.variables.api_base}}&req=geopolitical+alpha"
+[stages.parameters.headers]
+"User-Agent" = "ActionService/1.0"
+"Accept" = "application/json"
+
+# Stage 3: Transform the response to extract specific fields
+[[stages]]
+name = "extract_first_mirror"
+action = "scrape"
+[stages.parameters]
+input = "stages.fetch_search"
+selector = "a"
+operation = "filter"
+filter_type = "attribute"
+attribute = "title"
+filter_value = "Libgen"
+contains = true
+
+# Stage 4: Get book link
+[[stages]]
+name = "fetch_book_page"
+action = "get"
+[stages.parameters]
+url = "{{ (index .stages.extract_first_mirror 0).attributes.href }}"
+
+# Stage 5: Find the download link
+[[stages]]
+name = "find_download_link"
+action = "scrape"
+[stages.parameters]
+input = "stages.fetch_book_page"
+selector = "a"
+operation = "first"
+
+# Stage 6: Download the file
+[[stages]]
+name = "download_book"
+action = "download"
+[stages.parameters]
+url = "{{ .stages.find_download_link.attributes.href }}"
+output = "./downloads/book.pdf"
