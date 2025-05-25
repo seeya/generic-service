@@ -18,7 +18,9 @@ WORKDIR /app
 COPY --from=builder /app/app .
 
 RUN chown -R appuser /app
+
 USER appuser
+RUN mkdir ./downloads
 
 EXPOSE 8080
 
