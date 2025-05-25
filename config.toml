@@ -17,7 +17,7 @@ value = "https://libgen.is/search.php?lg_topic=libgen&open=0&view=simple&res=25&
 name = "fetch_search"
 action = "get"
 [stages.parameters]
-url = "{{.variables.api_base}}&req={{.variables.query_term}}"
+url = "{{.variables.api_base}}&req={{urlEncode .variables.query_term}}"
 [stages.parameters.headers]
 "User-Agent" = "ActionService/1.0"
 "Accept" = "application/json"
@@ -66,7 +66,7 @@ name = "download_book"
 action = "download"
 [stages.parameters]
 url = "{{ .stages.find_download_link.attributes.href }}"
-output = "./downloads/{{ .stages.find_book_name.text }}.pdf"
+output = "./downloads/{{ .stages.find_book_name.text }}/"
 
 # Setup endpoint
 [[stages]]
@@ -74,5 +74,5 @@ name = "search_book_api"
 action = "api"
 [stages.parameters]
 path = "/search"
-method = "GET"
+method = "POST"
 description = "Fetch user data by ID"

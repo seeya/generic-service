@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -280,7 +281,6 @@ func (s *Service) createEndpointHandler(endpoint *APIEndpoint) http.HandlerFunc 
 		requestContext.Variables["request_method"] = r.Method
 
 		// Execute the pipeline
-		log.Printf("Pipelines: %v", endpoint.Pipeline)
 		result, err := s.executePipeline(endpoint.Pipeline, requestContext)
 		if err != nil {
 			s.sendErrorResponse(w, fmt.Sprintf("Pipeline execution failed: %v", err), http.StatusInternalServerError)
@@ -906,24 +906,18 @@ func (s *Service) executeTransform(stage Stage) (interface{}, error) {
 }
 
 // executeDownload downloads a file
+// executeDownload downloads a file
 func (s *Service) executeDownload(stage Stage) (interface{}, error) {
-	url, err := s.interpolateString(getStringParam(stage.Parameters, "url"))
+	downloadLink, err := s.interpolateString(getStringParam(stage.Parameters, "url"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpolate URL: %w", err)
 	}
 
-	outputPath, err := s.interpolateString(getStringParam(stage.Parameters, "output"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to interpolate output path: %w", err)
-	}
+	outputPath := getStringParam(stage.Parameters, "output")
+	var finalOutputPath string
 
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create output directory: %w", err)
-	}
-
-	// Download file
-	resp, err := s.client.Get(url)
+	// Download file first to get headers
+	resp, err := s.client.Get(downloadLink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download file: %w", err)
 	}
@@ -933,8 +927,66 @@ func (s *Service) executeDownload(stage Stage) (interface{}, error) {
 		return nil, fmt.Errorf("download failed with status: %d", resp.StatusCode)
 	}
 
+	// Determine filename
+	var filename string
+
+	// First try to get filename from Content-Disposition header
+	if contentDisposition := resp.Header.Get("Content-Disposition"); contentDisposition != "" {
+		// Parse Content-Disposition header
+		// Look for filename= or filename*=
+		re := regexp.MustCompile(`filename\*?=['"]?([^'";]+)['"]?`)
+		matches := re.FindStringSubmatch(contentDisposition)
+		if len(matches) > 1 {
+			filename = matches[1]
+			// Handle URL-encoded filenames
+			if decoded, err := url.QueryUnescape(filename); err == nil {
+				filename = decoded
+			}
+		}
+	}
+
+	// If no filename from header, extract from URL path
+	if filename == "" {
+		parsedURL, err := url.Parse(downloadLink)
+		if err == nil {
+			filename = filepath.Base(parsedURL.Path)
+			// Remove query parameters if they somehow got included
+			filename = strings.Split(filename, "?")[0]
+		}
+	}
+
+	// If still no filename, use a default
+	if filename == "" || filename == "/" || filename == "." {
+		filename = "download"
+	}
+
+	// Determine final output path
+	if outputPath != "" {
+		interpolatedPath, err := s.interpolateString(outputPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to interpolate output path: %w", err)
+		}
+
+		// Check if output path is a directory
+		if strings.HasSuffix(interpolatedPath, "/") || strings.HasSuffix(interpolatedPath, "\\") {
+			// It's a directory, append the filename
+			finalOutputPath = filepath.Join(interpolatedPath, filename)
+		} else {
+			// It's a full file path
+			finalOutputPath = interpolatedPath
+		}
+	} else {
+		// No output path specified, use current directory with detected filename
+		finalOutputPath = filename
+	}
+
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(finalOutputPath), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	}
+
 	// Create output file
-	file, err := os.Create(outputPath)
+	file, err := os.Create(finalOutputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output file: %w", err)
 	}
@@ -947,8 +999,11 @@ func (s *Service) executeDownload(stage Stage) (interface{}, error) {
 	}
 
 	return map[string]interface{}{
-		"file_path": outputPath,
-		"status":    "downloaded",
+		"file_path":         finalOutputPath,
+		"detected_filename": filename,
+		"status":            "downloaded",
+		"content_type":      resp.Header.Get("Content-Type"),
+		"content_length":    resp.Header.Get("Content-Length"),
 	}, nil
 }
 
@@ -977,7 +1032,7 @@ func (s *Service) executeSetVariable(stage Stage) (interface{}, error) {
 
 // interpolateString replaces variables in a string with their values
 func (s *Service) interpolateString(str string) (string, error) {
-	tmpl, err := template.New("interpolate").Parse(str)
+	tmpl, err := template.New("interpolate").Funcs(s.getTemplateFunctions()).Parse(str)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)
 	}
@@ -993,6 +1048,57 @@ func (s *Service) interpolateString(str string) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+func (s *Service) hasElements(data interface{}) bool {
+	switch v := data.(type) {
+	case []interface{}:
+		return len(v) > 0
+	case map[string]interface{}:
+		return len(v) > 0
+	case nil:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Service) getTemplateFunctions() template.FuncMap {
+	return template.FuncMap{
+		"urlEncode": func(s string) string {
+			return url.QueryEscape(s)
+		},
+		"pathEncode": func(s string) string {
+			return url.PathEscape(s)
+		},
+		"htmlEscape": func(s string) string {
+			return template.HTMLEscapeString(s)
+		},
+		"safeIndex": func(slice interface{}, index int) interface{} {
+			switch v := slice.(type) {
+			case []interface{}:
+				if index >= 0 && index < len(v) {
+					return v[index]
+				}
+			}
+			return nil
+		},
+		"hasLength": func(data interface{}) bool {
+			return s.hasElements(data)
+		},
+		"length": func(data interface{}) int {
+			switch v := data.(type) {
+			case []interface{}:
+				return len(v)
+			case map[string]interface{}:
+				return len(v)
+			case string:
+				return len(v)
+			default:
+				return 0
+			}
+		},
+	}
 }
 
 // getNestedValue extracts a nested value from a data structure using dot notation
