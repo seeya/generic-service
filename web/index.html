@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Search Page</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-100 min-h-screen p-4">
+    <div class="max-w-md mx-auto">
+      <h1 class="text-2xl font-semibold mb-4">Search for ...</h1>
+      <div class="flex space-x-2 mb-6">
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="Type your query..."
+          class="flex-1 p-2 rounded border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          id="searchButton"
+          class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+        >
+          Search
+        </button>
+      </div>
+
+      <ul id="resultsList" class="space-y-4">
+        <!-- Results will be injected here -->
+      </ul>
+    </div>
+
+    <script>
+      const BASE_URL = window.location.search.split("?url=")[1];
+      document.getElementById("searchButton").addEventListener("click", performSearch);
+      document.getElementById("searchInput").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          performSearch();
+        }
+      });
+
+      async function performSearch() {
+        const input = document.getElementById("searchInput").value;
+        const resultsList = document.getElementById("resultsList");
+        resultsList.innerHTML = "";
+
+        let html = "";
+
+        const endpoint = "/movies/search";
+
+        try {
+          const response = await fetch(endpoint, {
+            headers: {
+              "Content-type": "application/json",
+            },
+            method: "POST",
+            body: JSON.stringify({
+              variables: {
+                query_term: input,
+              },
+            }),
+          });
+
+          const results = await response.json();
+          console.log(results);
+          if (!results.success) {
+            resultsList.innerHTML = '<li class="text-red-500">Failed to get results</li>';
+            return;
+          }
+          results.data.sort((a, b) => b.year - a.year);
+
+          results.data.forEach((item) => {
+            let { title, img, url, year } = item;
+
+            img = BASE_URL + img;
+            url = BASE_URL + url;
+
+            const li = document.createElement("li");
+            li.className =
+              "bg-white rounded-lg shadow p-4 flex items-start space-x-4 cursor-pointer hover:bg-gray-100";
+            li.onclick = () => window.open(url, "_blank");
+
+            const image = document.createElement("img");
+            image.src = img || "https://via.placeholder.com/60";
+            image.alt = title;
+            image.className = "w-16 h-16 object-cover rounded";
+
+            const textContainer = document.createElement("div");
+            textContainer.className = "flex-1";
+
+            const titleDiv = document.createElement("div");
+            titleDiv.textContent = title;
+            titleDiv.className = "font-bold text-gray-900";
+
+            const description = document.createElement("div");
+            description.textContent = year;
+            description.className = "text-gray-600 mt-1";
+
+            textContainer.appendChild(titleDiv);
+            textContainer.appendChild(description);
+
+            li.appendChild(image);
+            li.appendChild(textContainer);
+
+            resultsList.appendChild(li);
+          });
+        } catch (error) {
+          console.error("Failed to fetch results:", error);
+          resultsList.innerHTML = '<li class="text-red-500">Error fetching results.</li>';
+        }
+      }
+    </script>
+  </body>
+</html>

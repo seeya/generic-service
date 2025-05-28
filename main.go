@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -142,12 +143,29 @@ func (s *Service) registerBuiltinEndpoints() {
 	})
 }
 
+func index(w http.ResponseWriter, r *http.Request) {
+	slog.Info("serving static page")
+	fd, err := os.Open("./web/index.html")
+	if err != nil {
+		slog.Error("failed to get index.html", "error", err.Error())
+	}
+	defer fd.Close()
+
+	w.Header().Set("Content-Type", "text/html")
+	if _, err := io.Copy(w, fd); err != nil {
+		slog.Error("failed to write response", slog.String("error", err.Error()))
+	}
+
+}
+
 // StartServer starts the HTTP server and processes API stages
 func (s *Service) StartServer() error {
 	// First, process all stages to set up API endpoints
 	if err := s.setupAPIEndpoints(); err != nil {
 		return fmt.Errorf("failed to setup API endpoints: %w", err)
 	}
+
+	s.mux.HandleFunc("GET /home", index)
 
 	addr := fmt.Sprintf("%s:%s", s.config.Server.Host, s.config.Server.Port)
 	log.Printf("Starting server on %s", addr)
@@ -731,6 +749,8 @@ func (s *Service) executeStage(stage Stage) (interface{}, error) {
 		return s.executeHTTPPost(stage)
 	case "transform":
 		return s.executeTransform(stage)
+	case "log":
+		return s.executeLog(stage)
 	case "download":
 		return s.executeDownload(stage)
 	case "set_variable":
@@ -747,6 +767,10 @@ func (s *Service) executeStage(stage Stage) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("unknown action: %s", stage.Action)
 	}
+}
+
+func (s *Service) executeLog(stage Stage) (string, error) {
+	return fmt.Sprintf("%v", s.context.Outputs), nil
 }
 
 // executeHTTPGet performs a GET request
@@ -906,7 +930,6 @@ func (s *Service) executeTransform(stage Stage) (interface{}, error) {
 }
 
 // executeDownload downloads a file
-// executeDownload downloads a file
 func (s *Service) executeDownload(stage Stage) (interface{}, error) {
 	downloadLink, err := s.interpolateString(getStringParam(stage.Parameters, "url"))
 	if err != nil {
@@ -1065,6 +1088,13 @@ func (s *Service) hasElements(data interface{}) bool {
 
 func (s *Service) getTemplateFunctions() template.FuncMap {
 	return template.FuncMap{
+		"toJson": func(v interface{}) string {
+			jsonBytes, err := json.MarshalIndent(v, "", "  ")
+			if err != nil {
+				return fmt.Sprintf("JSON_ERROR: %v", err)
+			}
+			return string(jsonBytes)
+		},
 		"urlEncode": func(s string) string {
 			return url.QueryEscape(s)
 		},
