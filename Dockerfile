@@ -23,4 +23,4 @@ USER appuser
 
 EXPOSE 8080
 
-ENTRYPOINT ["./app", "/app/config.toml"]
+ENTRYPOINT ["./app", "./configs"]
