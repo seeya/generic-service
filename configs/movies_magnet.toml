@@ -1,0 +1,28 @@
+[[stages]]
+name = "movies_search_get_movie_page"
+action = "get"
+[stages.parameters]
+url = "{{.variables.query_term}}"
+[stages.parameters.headers]
+"User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+"Accept" = "application/json"
+
+[[stages]]
+name = "movies_search_get_all_magnet"
+action = "scrape"
+[stages.parameters]
+input = "stages.movies_search_get_movie_page"
+selector = "a"
+operation = "filter"
+filter_type = "attribute"
+attribute = "href"
+filter_value = "/torrent/"
+contains = true
+
+[[stages]]
+name = "search_movie_magnet"
+action = "api"
+[stages.parameters]
+path = "/movies/search/magnet"
+method = "POST"
+description = "Search given link movie magnet qualities"

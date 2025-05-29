@@ -1,0 +1,14 @@
+[[stages]]
+name = "download_movie_torrent"
+action = "download"
+[stages.parameters]
+url = "{{.variables.query_term}}"
+output = "./downloads/"
+
+[[stages]]
+name = "search_movie_download"
+action = "api"
+[stages.parameters]
+path = "/movies/download/torrent"
+method = "POST"
+description = "Search given link movie magnet qualities"

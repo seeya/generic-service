@@ -1,0 +1,31 @@
+[[stages]]
+name = "setup"
+action = "set_variable"
+[stages.parameters]
+name = "api_base"
+value = "https://en.yts-official.mx/ajax/search"
+
+[[stages]]
+name = "fetch_search"
+action = "get"
+[stages.parameters]
+url = "{{.variables.api_base}}?query={{urlEncode .variables.query_term}}"
+[stages.parameters.headers]
+"User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+"Accept" = "application/json"
+
+[[stages]]
+name = "transform_json"
+action = "transform"
+[stages.parameters]
+input = "stages.fetch_search.body"
+type = "json_extract"
+path = "data"
+
+[[stages]]
+name = "search_movies_api"
+action = "api"
+[stages.parameters]
+path = "/movies/search"
+method = "POST"
+description = "Search for movies"

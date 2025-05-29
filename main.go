@@ -2,11 +2,11 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +20,9 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/PuerkitoBio/goquery"
 )
+
+//go:embed web/index.html
+var indexHTML []byte
 
 type Config struct {
 	Stages []Stage      `toml:"stages"`
@@ -84,23 +87,39 @@ type APIResponse struct {
 	Context map[string]interface{} `json:"context,omitempty"`
 }
 
-// NewService creates a new service instance
-func NewService(configPath string) (*Service, error) {
-	var config Config
-	if _, err := toml.DecodeFile(configPath, &config); err != nil {
-		return nil, fmt.Errorf("failed to decode config: %w", err)
+func NewService(configDir string) (*Service, error) {
+	// Read all TOML files from configs directory
+	files, err := filepath.Glob(filepath.Join(configDir, "*.toml"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config directory: %w", err)
 	}
 
-	// Set default server config
-	if config.Server.Port == "" {
-		config.Server.Port = "8080"
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no TOML files found in %s", configDir)
 	}
-	if config.Server.Host == "" {
-		config.Server.Host = "localhost"
+
+	var allStages []Stage
+
+	// Load and merge all config files
+	for _, file := range files {
+		var config Config
+		if _, err := toml.DecodeFile(file, &config); err != nil {
+			return nil, fmt.Errorf("failed to decode config %s: %w", file, err)
+		}
+		allStages = append(allStages, config.Stages...)
+	}
+
+	// Create merged config
+	mergedConfig := Config{
+		Stages: allStages,
+		Server: ServerConfig{
+			Port: "8081",
+			Host: "localhost",
+		},
 	}
 
 	service := &Service{
-		config: config,
+		config: mergedConfig,
 		context: &Context{
 			Variables: make(map[string]interface{}),
 			Outputs:   make(map[string]interface{}),
@@ -110,9 +129,7 @@ func NewService(configPath string) (*Service, error) {
 		mux:       http.NewServeMux(),
 	}
 
-	// Register built-in endpoints
 	service.registerBuiltinEndpoints()
-
 	return service, nil
 }
 
@@ -144,17 +161,18 @@ func (s *Service) registerBuiltinEndpoints() {
 }
 
 func index(w http.ResponseWriter, r *http.Request) {
-	slog.Info("serving static page")
-	fd, err := os.Open("./web/index.html")
-	if err != nil {
-		slog.Error("failed to get index.html", "error", err.Error())
-	}
-	defer fd.Close()
+	// slog.Info("serving static page")
+	// fd, err := os.Open("./web/index.html")
+	// if err != nil {
+	// 	slog.Error("failed to get index.html", "error", err.Error())
+	// }
+	// defer fd.Close()
 
 	w.Header().Set("Content-Type", "text/html")
-	if _, err := io.Copy(w, fd); err != nil {
-		slog.Error("failed to write response", slog.String("error", err.Error()))
-	}
+	w.Write(indexHTML)
+	// if _, err := io.Copy(w, fd); err != nil {
+	// 	slog.Error("failed to write response", slog.String("error", err.Error()))
+	// }
 
 }
 
@@ -1228,13 +1246,13 @@ func (s *Service) PrintContext() {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Println("Usage: go run main.go <config.toml>")
+		fmt.Println("Usage: go run main.go <configs_directory>")
 		os.Exit(1)
 	}
 
-	configPath := os.Args[1]
+	configDir := os.Args[1]
 
-	service, err := NewService(configPath)
+	service, err := NewService(configDir)
 	if err != nil {
 		fmt.Printf("Failed to create service: %v\n", err)
 		os.Exit(1)
