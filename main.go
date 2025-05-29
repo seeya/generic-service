@@ -114,7 +114,7 @@ func NewService(configDir string) (*Service, error) {
 		Stages: allStages,
 		Server: ServerConfig{
 			Port: "8081",
-			Host: "localhost",
+			Host: "0.0.0.0",
 		},
 	}
 
@@ -167,7 +167,6 @@ func index(w http.ResponseWriter, r *http.Request) {
 	// 	slog.Error("failed to get index.html", "error", err.Error())
 	// }
 	// defer fd.Close()
-
 	w.Header().Set("Content-Type", "text/html")
 	w.Write(indexHTML)
 	// if _, err := io.Copy(w, fd); err != nil {
