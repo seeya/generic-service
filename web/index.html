@@ -135,7 +135,13 @@
                   quality.className =
                     "bg-green-500 text-white text-sm px-3 py-1 rounded hover:bg-green-600 ml-2";
                   quality.onclick = () => window.open(downloadLink, "_blank");
-                  quality.innerText = title.match(/\d+p/g)[0];
+                  let matched = title.match(/\d+p/g);
+
+                  if (matched) {
+                    quality.innerText = matched[0];
+                  } else {
+                    quality.innerText = title;
+                  }
                   textContainer.appendChild(quality);
 
                   let cloned = quality.cloneNode();
@@ -151,11 +157,14 @@
                         },
                       }),
                     });
+
+                    alert("request sent!");
                   };
                   cloned.innerText = "Send";
                   textContainer.append(cloned);
                 });
               } catch (err) {
+                console.log(err);
                 resultsList.innerHTML =
                   '<li class="text-red-500">Error fetching magnet links.</li>';
               }
